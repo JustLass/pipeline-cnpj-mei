@@ -390,7 +390,14 @@ def build_gold():
     for arq in arqs_empresas:
         df = pl.read_parquet(
             arq,
-            columns=["cnpj_basico", "natureza_juridica", "qualificacao_responsavel", "porte_empresa"],
+            columns=["cnpj_basico", "natureza_juridica", "qualificacao_responsavel", "porte_empresa", "capital_social"],
+        )
+        # Converte capital_social de string (ex: "10000,00") para float (ex: 10000.0)
+        df = df.with_columns(
+            pl.col("capital_social")
+            .str.replace(",", ".", literal=True)
+            .cast(pl.Float64, strict=False)
+            .fill_null(0.0)
         )
         # SEMI-JOIN: mantém apenas linhas cujo cnpj_basico existe em df_cnpjs_mei
         df = df.join(df_cnpjs_mei, on="cnpj_basico", how="semi")

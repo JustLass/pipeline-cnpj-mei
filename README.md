@@ -334,3 +334,66 @@ python build_mei_dataset.py
 ```
 
 > **O pipeline é idempotente.** Se interrompido, pode ser reiniciado — arquivos já processados são pulados automaticamente via checagem de existência do Parquet de saída.
+
+---
+
+## 🍃 Integração com MongoDB (Camada Operacional)
+
+Além do armazenamento em Parquet para consultas analíticas pesadas (OLAP), o projeto conta com uma **Integração com MongoDB (OLTP)** para permitir consultas cadastrais pontuais rápidas (360° Lookup) por CNPJ básico, CNAE e UF.
+
+### Arquitetura Híbrida (HTAP)
+* **DuckDB + Parquet**: Utilizado para realizar grandes agregações, cálculos de média de capital social e relatórios analíticos de BI.
+* **MongoDB (BSON)**: Utilizado para buscas detalhadas rápidas de empresas e suas filiais de forma denormalizada.
+
+### 📝 Estrutura do Documento e Resolução de Duplicidades
+Para aproveitar a modelagem orientada a documentos, o script de integração agrupa os estabelecimentos pelo `cnpj_basico`. 
+* Em vez de salvar cada filial em um registro separado (como no SQL/Parquet), salvamos um único documento por empresa (com o `_id` sendo o `cnpj_basico`) contendo um array de `estabelecimentos` (aninhando a matriz e todas as suas filiais no mesmo local).
+* Isso é implementado via operações em lote (**Bulk Write**) no MongoDB usando `UpdateOne(..., upsert=True)` com `$setOnInsert` para os metadados da empresa e `$push` com `$each` para carregar e ir acumulando os estabelecimentos no array de forma rápida e sem chaves duplicadas.
+
+### 🗄️ Onde o banco de dados é criado e armazenado?
+Como o banco de dados roda localmente:
+1. **Nome do Banco**: `cnpj_rf`
+2. **Nome da Coleção**: `empresas_mei`
+3. **Localização Física dos Arquivos**:
+   * **Via Docker (Recomendado)**: Os dados ficam armazenados em um volume gerenciado pelo Docker (`mongo_data`). No Windows (WSL2), esses dados são salvos no disco virtual do Docker, localizado tipicamente em `%USERPROFILE%\AppData\Local\Docker\wsl\data\ext4.vhdx`.
+   * **Instalação Nativa (MSI)**: Se instalado diretamente no Windows, os arquivos do banco ficam na pasta de dados padrão configurada na instalação (geralmente em `C:\Program Files\MongoDB\Server\<versão>\data\`).
+
+---
+
+### 🚀 Como Configurar e Rodar o MongoDB Local
+
+#### 1. Iniciar o Banco via Docker Desktop
+Com o **Docker Desktop** aberto e ativo, rode o seguinte comando no PowerShell para subir a imagem oficial do MongoDB:
+```powershell
+docker run -d --name mongo-local -p 27017:27017 -v mongo_data:/data/db mongo:latest
+```
+
+#### 2. Rodar a Carga de Integração
+Para ler os arquivos Parquet Gold, estruturar os documentos BSON com estabelecimentos aninhados e importar no MongoDB com os índices corretos, execute:
+```bash
+conda run -n base python integrate_mongodb.py
+```
+
+O script criará automaticamente os seguintes índices após a importação para garantir buscas em milissegundos:
+* `_id`: Chave primária baseada no `cnpj_basico`.
+* `estabelecimentos.cnae_fiscal_principal`: Índice para buscas rápidas por atividade econômica principal.
+* `estabelecimentos.cnae_fiscal_secundarias`: Índice *multikey* para filtrar por atividades secundárias contidas no array.
+* `estabelecimentos.endereco.uf`: Índice para filtragem rápida por estado de origem.
+
+---
+
+### 🔍 Exemplo de Consultas no MongoDB (Python / MongoDB Compass)
+
+**Pesquisa de Ficha Cadastral Completa por CNPJ (Busca direta por ID):**
+```python
+empresa = db.empresas_mei.find_one({"_id": 41367111})
+```
+
+**Busca de empresas no estado do Maranhão (MA) que atuam em um CNAE específico:**
+```python
+empresas = db.empresas_mei.find({
+    "estabelecimentos.endereco.uf": "MA",
+    "estabelecimentos.cnae_fiscal_principal": 4773300
+})
+```
+
