@@ -1,0 +1,8 @@
+*.bson
+*.json
+*.zip
+*.ipynb
+data/bruto
+data/extraido
+data/parquets
+data/silver
