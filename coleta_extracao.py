@@ -6,7 +6,7 @@ import zipfile
 import re
 
 # --- CONFIGURAÇÕES ---
-BASE_URL = "https://dados-abertos-rf-cnpj.casadosdados.com.br/arquivos/2025-12-14/"
+BASE_URL = "https://dados-abertos-rf-cnpj.casadosdados.com.br/arquivos/2026-05-10/"
 OUTPUT_DIR = "data/bruto"
 MAX_SIMULTANEOS = 4  # Limite de downloads ao mesmo tempo
 

@@ -69,21 +69,52 @@ def transformar_registro(r):
         except ValueError:
             pass
 
+    # Tratar Sócio (lido diretamente do registro plano)
+    nome_socio = r.get("nome_socio_razao_social")
+    if nome_socio is None or str(nome_socio).strip().upper() in ("NONE", "NULL", ""):
+        nome_socio = ""
+    else:
+        nome_socio = str(nome_socio).strip()
+
+    socios_arr = []
+    if nome_socio:
+        socios_arr.append({
+            "identificador_socio": int(r["identificador_socio"]) if r.get("identificador_socio") is not None else None,
+            "nome_socio_razao_social": nome_socio,
+            "cnpj_cpf_socio": r.get("cnpj_cpf_socio") or "",
+            "qualificacao_socio": int(r["qualificacao_socio"]) if r.get("qualificacao_socio") is not None else None,
+            "data_entrada_sociedade": int(r["data_entrada_sociedade"]) if r.get("data_entrada_sociedade") is not None else None
+        })
+
+    # Limpar Razão Social e Nome Fantasia de valores 'None'
+    razao_social = r.get("razao_social")
+    if razao_social is None or str(razao_social).strip().upper() in ("NONE", "NULL", ""):
+        razao_social = ""
+    else:
+        razao_social = str(razao_social).strip()
+
+    nome_fantasia = r.get("nome_fantasia")
+    if nome_fantasia is None or str(nome_fantasia).strip().upper() in ("NONE", "NULL", ""):
+        nome_fantasia = ""
+    else:
+        nome_fantasia = str(nome_fantasia).strip()
+
     # Estruturar o documento
     return {
         "_id": int(r["cnpj_basico"]),  # Usamos o cnpj_basico como chave primária única
-        "razao_social": r.get("razao_social"),
+        "razao_social": razao_social,
         "natureza_juridica": int(r["natureza_juridica"]) if r.get("natureza_juridica") is not None else None,
         "capital_social": float(r["capital_social"]) if r.get("capital_social") is not None else 0.0,
         "porte_empresa": int(r["porte_empresa"]) if r.get("porte_empresa") is not None else None,
         "opcao_pelo_simples": "S",
         "opcao_pelo_mei": "S",
+        "socios": socios_arr,
         "estabelecimentos": [
             {
                 "cnpj_ordem": int(r["cnpj_ordem"]) if r.get("cnpj_ordem") is not None else None,
                 "cnpj_dv": int(r["cnpj_dv"]) if r.get("cnpj_dv") is not None else None,
                 "identificador_matriz_filial": int(r["identificador_matriz_filial"]) if r.get("identificador_matriz_filial") is not None else 1,
-                "nome_fantasia": r.get("nome_fantasia"),
+                "nome_fantasia": nome_fantasia,
                 "situacao_cadastral": int(r["situacao_cadastral"]) if r.get("situacao_cadastral") is not None else None,
                 "data_situacao_cadastral": int(r["data_situacao_cadastral"]) if r.get("data_situacao_cadastral") is not None else None,
                 "data_inicio_atividade": int(r["data_inicio_atividade"]) if r.get("data_inicio_atividade") is not None else None,
@@ -133,9 +164,9 @@ def main():
         print(e)
         sys.exit(1)
 
-    # Limpar coleção existente antes da importação
-    print(f"🧹 Limpando coleção existente '{COLLECTION_NAME}'...")
-    collection.drop()
+    # Limpar banco de dados completo antes da importação
+    print(f"🧹 Limpando banco de dados completo '{DB_NAME}'...")
+    client.drop_database(DB_NAME)
 
     # Leitura e inserção por batches (PyArrow + Polars)
     print("🚀 Iniciando a importação dos dados...")
@@ -149,8 +180,8 @@ def main():
         batch_num += 1
         tempo_batch_inicio = time.time()
         
-        # Converte para DataFrame Polars
-        df = pl.from_arrow(record_batch)
+        # Converte para DataFrame Polars e remove possíveis linhas exatas duplicadas vindas da Receita
+        df = pl.from_arrow(record_batch).unique()
         
         # Converte para lista de dicionários nativos Python
         registros = df.to_dicts()
@@ -180,7 +211,8 @@ def main():
                         "capital_social": doc["capital_social"],
                         "porte_empresa": doc["porte_empresa"],
                         "opcao_pelo_simples": doc["opcao_pelo_simples"],
-                        "opcao_pelo_mei": doc["opcao_pelo_mei"]
+                        "opcao_pelo_mei": doc["opcao_pelo_mei"],
+                        "socios": doc.get("socios", [])
                     },
                     "$push": {
                         "estabelecimentos": {

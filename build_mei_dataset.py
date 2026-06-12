@@ -93,6 +93,20 @@ SCHEMA_SIMPLES = {
     "data_exclusao_mei":     pl.UInt32,
 }
 
+SCHEMA_SOCIOS = {
+    "cnpj_basico":                      pl.UInt32,
+    "identificador_socio":              pl.UInt8,
+    "nome_socio_razao_social":          pl.Utf8,
+    "cnpj_cpf_socio":                   pl.Utf8,
+    "qualificacao_socio":               pl.UInt8,
+    "data_entrada_sociedade":           pl.UInt32,
+    "pais":                             pl.UInt16,
+    "representante_legal":              pl.Utf8,
+    "nome_representante":               pl.Utf8,
+    "qualificacao_representante_legal":  pl.UInt8,
+    "faixa_etaria":                     pl.UInt8,
+}
+
 SCHEMA_DOMINIO = {
     "codigo":    pl.UInt32,
     "descricao": pl.Utf8,
@@ -113,6 +127,7 @@ TABELAS_SILVER = {
     "Empresas":         ("empresas",         SCHEMA_EMPRESAS),
     "Estabelecimentos": ("estabelecimentos",  SCHEMA_ESTABELECIMENTOS),
     "Simples":          ("simples",           SCHEMA_SIMPLES),
+    "Socios":           ("socios",            SCHEMA_SOCIOS),
 }
 
 # ---------------------------------------------------------------------------
@@ -411,9 +426,41 @@ def build_gold():
     print(f"      ✅ {len(df_empresas_mei):,} empresas MEI ({ram_emp:.1f} MB na RAM)")
 
     # ------------------------------------------------------------------
+    # Passo 2.5/4: Carregar Sócios MEI na memória (~150MB de RAM)
+    # ------------------------------------------------------------------
+    print("   ⏳ Passo 2.5/4: Carregando dados de Sócios (apenas MEI)...")
+    arqs_socios = sorted(glob.glob(os.path.join(PASTA_SILVER, "socios", "*.parquet")))
+    partes_soc = []
+    for arq in arqs_socios:
+        df_soc = pl.read_parquet(
+            arq,
+            columns=["cnpj_basico", "identificador_socio", "nome_socio_razao_social", "cnpj_cpf_socio", "qualificacao_socio", "data_entrada_sociedade"]
+        )
+        df_soc = df_soc.join(df_cnpjs_mei, on="cnpj_basico", how="semi")
+        if len(df_soc) > 0:
+            partes_soc.append(df_soc)
+        del df_soc
+    if partes_soc:
+        df_socios_mei = pl.concat(partes_soc)
+        del partes_soc
+        gc.collect()
+        ram_soc = df_socios_mei.estimated_size("mb")
+        print(f"      ✅ {len(df_socios_mei):,} sócios MEI ({ram_soc:.1f} MB na RAM)")
+    else:
+        df_socios_mei = pl.DataFrame(schema={
+            "cnpj_basico": pl.UInt32,
+            "identificador_socio": pl.UInt8,
+            "nome_socio_razao_social": pl.Utf8,
+            "cnpj_cpf_socio": pl.Utf8,
+            "qualificacao_socio": pl.UInt8,
+            "data_entrada_sociedade": pl.UInt32
+        })
+        print("      ⚠️ Nenhum arquivo ou registro de sócios encontrado.")
+
+    # ------------------------------------------------------------------
     # Passo 3/4: Processar Estabelecimentos chunk por chunk
     # ------------------------------------------------------------------
-    print("   ⏳ Passo 3/4: Filtrando Estabelecimentos e gerando fato...")
+    print("   ⏳ Passo 3/4: Filtrando Estabelecimentos, juntando Sócios e gerando fato...")
     arqs_estab = sorted(glob.glob(os.path.join(PASTA_SILVER, "estabelecimentos", "*.parquet")))
     total_linhas   = 0
     chunks_escritos = 0
@@ -431,6 +478,9 @@ def build_gold():
         # Inner join com Empresas: adiciona natureza_juridica, porte, etc.
         df = df.join(df_empresas_mei, on="cnpj_basico", how="inner")
 
+        # Left join com Sócios: adiciona dados do sócio proprietário na própria Fato!
+        df = df.join(df_socios_mei, on="cnpj_basico", how="left")
+
         # Escreve o resultado direto no disco e LIBERA a RAM
         caminho_chunk = os.path.join(pasta_fato_tmp, f"fato_{chunks_escritos:04d}.parquet")
         df.write_parquet(caminho_chunk, compression="snappy", statistics=True)
@@ -443,7 +493,7 @@ def build_gold():
             print(f"      [{i+1}/{len(arqs_estab)}] {total_linhas:,} linhas MEI acumuladas")
 
     # Libera as tabelas auxiliares que não precisamos mais
-    del df_cnpjs_mei, df_empresas_mei
+    del df_cnpjs_mei, df_empresas_mei, df_socios_mei
     gc.collect()
 
     # ------------------------------------------------------------------

@@ -1,54 +1,53 @@
-# Pipeline CNPJ RF — Documentação Técnica
+# Pipeline CNPJ RF — Ingestão, Transformação e Visualização de Dados de MEIs
 
 ## Visão Geral
 
-Pipeline de ingestão e transformação dos **Dados Abertos de CNPJ da Receita Federal**, com foco em extrair um dataset analítico de **Microempreendedores Individuais (MEI)**, pronto para consumo em ferramentas de BI ou bancos de dados analíticos.
+Este projeto consiste em um pipeline de engenharia de dados completo para processamento, armazenamento e visualização dos **Dados Abertos de CNPJ da Receita Federal**. O foco principal é a extração, tratamento e consolidação de um dataset analítico de **Microempreendedores Individuais (MEI)** do Brasil.
 
-**Fonte dos dados:** [dados-abertos-rf-cnpj.casadosdados.com.br](https://dados-abertos-rf-cnpj.casadosdados.com.br)  
-**Formato de origem:** CSV sem header, separador `;`, encoding `latin1`  
-**Stack:** Python 3.13 + Polars + Miniconda
+O pipeline adota a **Arquitetura Medalhão** (Bronze → Silver → Gold) utilizando **Python 3.13** e **Polars** para transformação de alto desempenho. O armazenamento analítico (OLAP) é feito em arquivos compactados **Parquet**, enquanto a camada operacional e de busca rápida (OLTP/Lookup) utiliza o **MongoDB**. Por fim, uma aplicação **Streamlit** fornece análises visuais ricas e um mecanismo de consulta cadastral 360°.
+
+* **Fonte dos dados:** [dados-abertos-rf-cnpj.casadosdados.com.br](https://dados-abertos-rf-cnpj.casadosdados.com.br)
+* **Formato original:** CSV sem cabeçalho, delimitador `;`, codificação `latin1`.
+* **Stack Principal:** Python 3.13 + Polars + PyArrow + MongoDB + Streamlit + Plotly.
 
 ---
 
 ## Por que Polars e não Spark?
 
-O Apache Spark é a ferramenta padrão de Big Data na indústria, mas foi projetado para **clusters distribuídos** (10-1000 máquinas processando Petabytes). Para este projeto — ~40 GB de dados processados em **uma única máquina** — o Polars é a escolha mais adequada:
+Embora o Apache Spark seja o padrão da indústria para Big Data em clusters distribuídos, este projeto processa cerca de **40 GB** de dados brutos em um ambiente de **máquina única (single-node)**. Para esse cenário, o **Polars** (escrito em Rust) provou-se consideravelmente superior:
 
-| Critério | Spark | Polars |
+| Critério | Apache Spark | Polars (Rust) |
 |---|---|---|
-| **Setup** | Java JDK + Hadoop + PySpark (~1 GB) | `pip install polars` (20 MB) |
-| **Startup** | 5-15s para iniciar a JVM | Instantâneo |
-| **Velocidade (single-node)** | Overhead de serialização Java ↔ Python | **2-5x mais rápido** (motor Rust nativo, zero cópia) |
-| **Uso ideal** | Cluster distribuído, Petabytes | **1 máquina**, Gigabytes-Terabytes |
-| **Dependências** | JVM, Hadoop, variáveis de ambiente | Zero dependências externas |
+| **Setup & Instalação** | JVM (Java JDK) + Hadoop + PySpark (~1 GB) | `pip install polars` (20 MB) |
+| **Tempo de Inicialização** | 5 a 15 segundos para carregar a JVM | Instantâneo |
+| **Velocidade (Single-Node)** | Overhead de serialização e IPC entre Java/Python | **2x a 5x mais rápido** (motor Rust nativo, multithread eficiente e zero copy) |
+| **Uso de Memória** | Alto consumo e garbage collection da JVM | Baixo consumo com alocação otimizada em Rust |
+| **Dependências** | Complexo (JVM, caminhos de classe, SparkConf) | Nenhuma dependência externa complexa |
 
-**Nota:** O desafio principal deste pipeline não foi o volume de dados em si, mas o encoding `latin1` dos CSVs da Receita Federal. Nem o Polars nem o Spark leem `latin1` de forma nativa e eficiente — ambos carregariam o arquivo inteiro na RAM via codec Python/Java. A estratégia de leitura em chunks com conversão em memória (`io.BytesIO`) seria necessária em qualquer uma das duas ferramentas.
+**Nota técnica:** O gargalo do processo reside no fato de os CSVs originais estarem salvos em codificação `latin1`. Motores de alta performance (como Rust no Polars ou C++ no Spark) exigem strings `UTF-8` nativamente. O pipeline resolve isso lendo os arquivos em chunks de 1 milhão de linhas via streaming e realizando a decodificação em memória (`io.BytesIO`) antes de entregar o DataFrame ao Polars, mantendo o pico de uso de RAM sob controle (~400 MB).
 
 ---
 
-## Estrutura de Pastas
+## Estrutura do Workspace e Arquivos
 
 ```
 Pipeline CNPJ RF/
 │
 ├── data/
-│   ├── bruto/              # ZIPs baixados da Receita Federal
-│   ├── extraido/           # CSVs extraídos dos ZIPs (Bronze)
+│   ├── bruto/              # Arquivos .zip baixados da Receita Federal
+│   ├── extraido/           # CSVs originais extraídos (Camada Bronze)
 │   │   ├── Empresas/
 │   │   ├── Estabelecimentos/
 │   │   ├── Simples/
-│   │   ├── Naturezas/
-│   │   ├── Qualificacoes/
-│   │   ├── Motivos/
-│   │   ├── Municipios/
-│   │   ├── Paises/
-│   │   └── Cnaes/
-│   ├── silver/             # Parquets intermediários (Silver)
+│   │   ├── Socios/
+│   │   └── ... (Cnaes, Municipios, Paises, Naturezas, etc.)
+│   ├── silver/             # Arquivos Parquet intermediários tipados (Camada Silver)
 │   │   ├── empresas/
 │   │   ├── estabelecimentos/
+│   │   ├── socios/
 │   │   └── simples/
-│   └── parquets/           # Outputs finais (Gold)
-│       ├── mei_estabelecimentos_YYYYMMDD.parquet  ← tabela FATO
+│   └── parquets/           # Datasets consolidados e otimizados (Camada Gold)
+│       ├── mei_estabelecimentos_YYYYMMDD.parquet  ← Tabela Fato MEI (Unificada com Sócios)
 │       ├── dim_naturezas_juridicas.parquet
 │       ├── dim_qualificacoes_socios.parquet
 │       ├── dim_motivos_situacao.parquet
@@ -56,344 +55,287 @@ Pipeline CNPJ RF/
 │       ├── dim_paises.parquet
 │       └── dim_cnaes.parquet
 │
-├── coleta.py               # Download paralelo dos ZIPs da Receita
-├── extrair_dados.py        # Extração dos ZIPs + remoção dos ZIPs
-├── build_mei_dataset.py    # Pipeline principal (Bronze → Silver → Gold)
-├── cnpj-metadados.pdf      # Dicionário de dados oficial da Receita Federal
-├── .gitignore
-└── DOCUMENTACAO.md
+├── dashboard/              # Painel Streamlit e componentes visuais
+│   ├── app.py              # Ponto de entrada e roteamento de abas
+│   ├── config.py           # Estilos (paleta de cores HSL), layouts e constantes
+│   ├── data_loader.py      # Carregamento e cache dinâmico de dados (Polars & MongoDB)
+│   ├── mongo_client.py     # Singleton do cliente de conexão com MongoDB
+│   ├── requirements.txt    # Dependências exclusivas do dashboard
+│   ├── components/         # Componentes reutilizáveis do dashboard
+│   │   ├── charts.py       # Gerador centralizado de gráficos Plotly
+│   │   ├── filters.py      # Painéis de filtros laterais/superiores
+│   │   └── kpi_cards.py    # Cartões de métricas em CSS/HTML moderno
+│   └── views/              # Páginas e dashboards específicos
+│       ├── visao_geral.py       # KPIs gerais e situação cadastral do MEI
+│       ├── analise_temporal.py  # Histórico de aberturas, fechamentos e capital social (>= 2009)
+│       ├── analise_geografica.py# Mapas coropléticos de distribuição geográfica (UFs)
+│       ├── analise_cnae.py      # Estatísticas de atividades econômicas (Top CNAEs)
+│       └── consulta_cadastral.py# Mecanismo de busca 360° integrado ao MongoDB
+│
+├── coleta_extracao.py      # Script unificado para download paralelo dos ZIPs e descompactação
+├── build_mei_dataset.py    # Pipeline de processamento ETL (Bronze → Silver → Gold)
+├── integrate_mongodb.py    # Carga otimizada em batches no MongoDB (OLTP / Operational)
+├── main.ipynb              # Notebook Jupyter para experimentações e análises
+├── .gitignore              # Ignora arquivos de dados analíticos volumosos
+└── README.md               # Esta documentação
 ```
 
 ---
 
-## Scripts
+## O Pipeline de Transformação (Arquitetura Medalhão)
 
-### `coleta_extracao.py` — Download dos Arquivos
-
-Baixa todos os arquivos `.zip` da página da Receita Federal usando `requests` com `ThreadPoolExecutor` (downloads paralelos, até 4 simultâneos).
-
-- **Entrada:** URL do servidor da Receita Federal  
-- **Saída:** `data/bruto/*.zip`
-- **Idempotente:** pula arquivos já baixados
-
-Extrai todos os `.zip` de `data/bruto/` para subpastas em `data/extraido/`, agrupando por categoria (ex: `Empresas0.zip`, `Empresas1.zip` → pasta `data/extraido/Empresas/`). Após extração bem-sucedida, **deleta o `.zip`** para liberar espaço em disco.
-
-- **Entrada:** `data/bruto/*.zip`  
-- **Saída:** `data/extraido/<Categoria>/`
-- **Lógica de pasta:** regex `\d+$` remove o sufixo numérico do nome do arquivo
-
-```bash
-python coleta_extracao.py
 ```
+BRONZE                 SILVER                   GOLD
+data/extraido/         data/silver/             data/parquets/
+───────────────        ─────────────────        ─────────────────────────────────
+CSV latin1             Parquet por chunk        Parquet consolidado estruturado
+Sem cabeçalhos         Tipos de dados nativos   (Tabela Fato MEI + Dimensões)
+                       (Conversão p/ UTF-8)
+```
+
+### Camada Bronze (Dados Extraídos)
+Os arquivos `.zip` do portal público são baixados pelo script `coleta_extracao.py` em múltiplos downloads concorrentes (usando `ThreadPoolExecutor`). Logo em seguida, os arquivos são descompactados nas subpastas apropriadas e os arquivos brutos compactados são apagados para economizar espaço de armazenamento.
+
+### Camada Silver (Parquet Tipado por Chunk)
+Para evitar falhas de memória (OOM) em máquinas com menor capacidade, o arquivo `build_mei_dataset.py` divide a conversão dos arquivos gigantescos (como `Estabelecimentos` e `Empresas`) em blocos (chunks) de 1.000.000 de linhas. Cada bloco é decodificado de `latin1` para `utf-8` na RAM de maneira eficiente e salvo como arquivos Parquet compactados individuais dentro do diretório `data/silver/`.
+
+### Camada Gold (Cruzamento e Consolidação)
+O principal objetivo desta fase é consolidar as tabelas num dataset único de **Microempreendedores Individuais (MEI)**.
+Para contornar o gargalo da CPU e uso de memória de grandes queries de JOIN analítico, a consolidação executa as seguintes etapas:
+1. **Identificação de MEIs**: Lê os metadados do Simples Nacional (`data/silver/simples/`) e isola apenas os CNPJs com a flag `opcao_pelo_mei == 'S'`.
+2. **Filtragem de Empresas**: Executa um `SEMI-JOIN` entre as empresas e a lista de CNPJs MEI isolados, reduzindo drasticamente o dataset em RAM.
+3. **Consolidação em Bloco**: Para cada chunk de Estabelecimentos na camada Silver, realiza o cruzamento com as Empresas MEI filtradas e também faz o cruzamento (`left-join`) com a tabela de **Sócios**.
+4. **Resolução de Relações de Sócios**: Por definição do modelo de negócios do MEI (Microempreendedor Individual), a empresa é composta por **apenas um único sócio proprietário**. Portanto, a relação entre estabelecimentos e sócios é de **1-para-1**, permitindo consolidar os atributos dos sócios diretamente na linha do estabelecimento sem inflar a cardinalidade ou gerar duplicidade cartesiana.
+5. **Gravação**: Gera a Fato consolidada e unificada no arquivo final compactado `mei_estabelecimentos_YYYYMMDD.parquet`.
 
 ---
 
-### `build_mei_dataset.py` — Pipeline Principal
+## Schema da Tabela Fato Gold (39 colunas)
 
-Arquivo central do projeto. Implementa a **Arquitetura Medalhão** em 3 fases.
+O dataset final `mei_estabelecimentos_YYYYMMDD.parquet` reúne 30 colunas de Estabelecimentos, 4 colunas de Empresas e 5 colunas do Sócio Proprietário:
 
-```bash
-python build_mei_dataset.py
-```
-
----
-
-## Arquitetura Medalhão
-
-```
-BRONZE          SILVER                    GOLD
-data/extraido/  data/silver/              data/parquets/
-─────────────   ──────────────────        ────────────────────────────────
-CSV latin1      Parquet por arquivo       Parquets finais prontos
-sem header      tipos otimizados          para consumo analítico
-                (um por vez → sem OOM)    (tabela fato + dimensões)
-```
-
-### Por que 3 camadas?
-
-Os CSVs da Receita Federal têm dois problemas sérios para Big Data:
-
-1. **Encoding latin1:** O motor Rust do Polars só aceita UTF-8 nativamente. Forçar latin1 faz o Python carregar o arquivo **inteiro na RAM** antes de passar para o Polars (1 arquivo de 1.5GB → 3GB+ de RAM). Com 10 arquivos de Estabelecimentos, isso é um `MemoryError` garantido.
-
-2. **Sem header, separador diferente:** Requer configuração manual de schema.
-
-A solução é **separar o problema de encoding do problema de processamento**:
-- A camada Silver resolve o encoding convertendo linha a linha (custo de RAM ≈ 0)
-- A camada Gold usa `scan_parquet` (nativo Rust, lazy, streaming real) para o JOIN
-
----
-
-## Fase 1 — Dimensões (Bronze → Gold)
-
-As tabelas de domínio são **pequenas** (máximo ~5MB cada). Para elas, o `read_csv` com fallback de encoding do Python é viável sem risco de OOM.
-
-| Pasta (Bronze)  | Parquet (Gold)                    | Linhas |
-|-----------------|-----------------------------------|--------|
-| `Naturezas/`    | `dim_naturezas_juridicas.parquet` | ~91    |
-| `Qualificacoes/`| `dim_qualificacoes_socios.parquet`| ~68    |
-| `Motivos/`      | `dim_motivos_situacao.parquet`    | ~63    |
-| `Municipios/`   | `dim_municipios.parquet`          | ~5.572 |
-| `Paises/`       | `dim_paises.parquet`              | ~255   |
-| `Cnaes/`        | `dim_cnaes.parquet`               | ~1.359 |
-
-Todas têm apenas duas colunas: `codigo` (UInt32) e `descricao` (String).
-
----
-
-## Fase 2 — Silver (Bronze → Silver)
-
-Converte cada CSV grande para Parquet dividindo-o em **chunks de 1 milhão de linhas**, processando um chunk por vez para evitar Out Of Memory (OOM):
-
-```
-CSV latin1 (disco)
-    ↓
-Python abre e lê 1 milhão de linhas (≈ 200 MB de RAM)
-    ↓
-Linhas são agrupadas em string e encodadas para UTF-8 em memória (io.BytesIO)
-    ↓
-Polars read_csv lê o buffer nativamente (motor Rust)
-    ↓
-_cast_schema() → aplica tipos corretos
-    ↓
-write_parquet() → silver/<categoria>/<arquivo>_0000.parquet
-    ↓
-del df e buffer → gc.collect() libera a memória RAM IMEDIATAMENTE
-    ↓
-lê os próximos 1M de linhas...
-```
-
-O pico de RAM em qualquer momento é de apenas **~400 MB** por chunk. O CSV gigante gera múltiplos arquivos menores (chunks) no final. **Idempotente:** arquivos que já possuem o chunk `_0000.parquet` são pulados.
----
-
-## Fase 3 — Gold (Silver → Fato)
-
-Etapa final: cruzar Simples + Empresas + Estabelecimentos para gerar a **Tabela Fato MEI**.
-
-### O Problema do "Spill to Disk"
-
-Usar `LazyFrame` com `is_in()` e `sink_parquet()` parecia ideal, mas o Polars tenta materializar o plano inteiro na RAM antes de escrever. Com 70M+ linhas e um HashSet de 16.7M CNPJs, isso causava:
-- **OOM** (Out of Memory) em PCs com 16 GB de RAM, ou
-- **Spill to Disk** (SSD a 100% de uso), travando a máquina por completo.
-
-### Solução: Processamento EAGER chunk por chunk com SEMI-JOIN
-
-Em vez de deixar o Polars planejar tudo de uma vez, nós controlamos cada passo manualmente:
-
-```
-Passo 1/4 — Isolar CNPJs MEI (~67 MB na RAM)
-    Lê tabela Simples → filtra opcao_pelo_mei == 'S' → DataFrame de 1 coluna
-
-Passo 2/4 — Carregar Empresas MEI (~134 MB na RAM)
-    Lê cada chunk de Empresas → SEMI-JOIN com CNPJs MEI → concat resultado
-
-Passo 3/4 — Processar Estabelecimentos (chunk por chunk, ~200 MB por vez)
-    Para CADA parquet de Estabelecimentos:
-        ↓ pl.read_parquet(chunk)           ← lê ~1M linhas (~200 MB)
-        ↓ semi-join com df_cnpjs_mei       ← descarta ~70% das linhas (não-MEI)
-        ↓ inner join com df_empresas_mei   ← adiciona porte, natureza jurídica
-        ↓ write_parquet(fato_chunk)        ← escreve no disco imediatamente
-        ↓ del df → gc.collect()            ← RAM liberada antes do próximo chunk
-
-Passo 4/4 — Consolidar chunks no arquivo final (streaming)
-    scan_parquet("_fato_chunks/*.parquet").sink_parquet(final.parquet)
-    Limpa a pasta temporária de chunks.
-```
-
-**Pico de RAM:** ~600 MB (vs 10+ GB do LazyFrame).
-
-**Por que SEMI-JOIN e não `is_in()`?**
-- `is_in(Series)` cria um HashSet Python de 16.7M entradas na RAM (~470 MB)
-- `semi-join` usa o motor Rust nativo do Polars (hash join otimizado, ~67 MB)
-- Sem `DeprecationWarning` do Polars sobre `is_in` com coleções do mesmo tipo
-
-**Resultado final:** Um único arquivo `.parquet` compactado (`mei_estabelecimentos_YYYYMMDD.parquet`) contendo a Tabela Fato modelada.
-
----
-
-## Schema da Tabela Fato (33 colunas)
-
-O Parquet `mei_estabelecimentos_YYYYMMDD.parquet` contém 30 colunas de **Estabelecimentos** + 3 colunas de **Empresas**, cruzadas via `cnpj_basico`:
-
-| # | Coluna | Tipo | Origem |
+| Índice | Coluna | Tipo Polars | Descrição |
 |---|---|---|---|
-| 1 | `cnpj_basico` | `UInt32` | Estabelecimentos (chave de JOIN) |
-| 2 | `cnpj_ordem` | `UInt16` | Estabelecimentos |
-| 3 | `cnpj_dv` | `UInt8` | Estabelecimentos |
-| 4 | `identificador_matriz_filial` | `UInt8` | Estabelecimentos |
-| 5 | `nome_fantasia` | `String` | Estabelecimentos |
-| 6 | `situacao_cadastral` | `UInt8` | Estabelecimentos |
-| 7 | `data_situacao_cadastral` | `UInt32` | Estabelecimentos |
-| 8 | `motivo_situacao_cadastral` | `UInt8` | Estabelecimentos |
-| 9 | `nome_cidade_exterior` | `String` | Estabelecimentos |
-| 10 | `pais` | `UInt16` | Estabelecimentos |
-| 11 | `data_inicio_atividade` | `UInt32` | Estabelecimentos |
-| 12 | `cnae_fiscal_principal` | `UInt32` | Estabelecimentos |
-| 13 | `cnae_fiscal_secundaria` | `String` | Estabelecimentos |
-| 14 | `tipo_logradouro` | `String` | Estabelecimentos |
-| 15 | `logradouro` | `String` | Estabelecimentos |
-| 16 | `numero` | `String` | Estabelecimentos |
-| 17 | `complemento` | `String` | Estabelecimentos |
-| 18 | `bairro` | `String` | Estabelecimentos |
-| 19 | `cep` | `UInt32` | Estabelecimentos |
-| 20 | `uf` | `String` | Estabelecimentos |
-| 21 | `municipio` | `UInt32` | Estabelecimentos |
-| 22 | `ddd_1` | `UInt16` | Estabelecimentos |
-| 23 | `telefone_1` | `String` | Estabelecimentos |
-| 24 | `ddd_2` | `UInt16` | Estabelecimentos |
-| 25 | `telefone_2` | `String` | Estabelecimentos |
-| 26 | `ddd_fax` | `UInt16` | Estabelecimentos |
-| 27 | `fax` | `String` | Estabelecimentos |
-| 28 | `correio_eletronico` | `String` | Estabelecimentos |
-| 29 | `situacao_especial` | `String` | Estabelecimentos |
-| 30 | `data_situacao_especial` | `UInt32` | Estabelecimentos |
-| 31 | `natureza_juridica` | `UInt16` | Empresas |
-| 32 | `qualificacao_responsavel` | `UInt8` | Empresas |
-| 33 | `porte_empresa` | `UInt8` | Empresas |
-
-### Decisões de Tipagem
-
-| Tipo | Colunas | Motivo |
-|---|---|---|
-| `UInt32` | `cnpj_basico`, `cep`, `cnae_fiscal_principal`, `municipio`, datas | Códigos numéricos de até 8 dígitos — 4 bytes vs 10 de String |
-| `UInt16` | `cnpj_ordem`, `pais`, `ddd_*`, `natureza_juridica` | Valores até 65.535 — 2 bytes |
-| `UInt8` | `cnpj_dv`, `situacao_cadastral`, `porte_empresa`, etc. | Valores até 255 — 1 byte |
-| `String` | `nome_fantasia`, `logradouro`, `numero`, etc. | Texto livre ou valores mistos (ex: `numero` pode ser `"S/N"`) |
-
-### Tabela Sócios — Por que não incluída?
-
-Por definição legal, o MEI é um empresário individual — ele próprio é o único sócio. A tabela de Sócios só adicionaria redundância sem valor analítico. Foi excluída intencionalmente para reduzir volume e tempo de processamento.
+| 1 | `cnpj_basico` | `UInt32` | Identificador base do CNPJ (chave de cruzamento) |
+| 2 | `cnpj_ordem` | `UInt16` | Sufixo identificador do CNPJ (ex: 0001) |
+| 3 | `cnpj_dv` | `UInt8` | Dígitos verificadores do CNPJ |
+| 4 | `identificador_matriz_filial` | `UInt8` | Indica se é Matriz (1) ou Filial (2) |
+| 5 | `nome_fantasia` | `String` | Nome de fachada/fantasia |
+| 6 | `situacao_cadastral` | `UInt8` | Estado cadastral da empresa (1: Nula, 2: Ativa, 3: Suspensa, 4: Inapta, 8: Baixada) |
+| 7 | `data_situacao_cadastral` | `UInt32` | Data de alteração do status (AAAAMMDD) |
+| 8 | `motivo_situacao_cadastral` | `UInt8` | Motivo de baixa ou inaptidão |
+| 9 | `nome_cidade_exterior` | `String` | Cidade internacional, se aplicável |
+| 10 | `pais` | `UInt16` | Código do país de origem |
+| 11 | `data_inicio_atividade` | `UInt32` | Data de fundação oficial da empresa (AAAAMMDD) |
+| 12 | `cnae_fiscal_principal` | `UInt32` | Código da atividade econômica principal (CNAE) |
+| 13 | `cnae_fiscal_secundaria` | `String` | Lista de CNAEs secundários separados por vírgula |
+| 14 | `tipo_logradouro` | `String` | Classificação do endereço (Rua, Av, etc) |
+| 15 | `logradouro` | `String` | Nome do logradouro |
+| 16 | `numero` | `String` | Número físico do endereço |
+| 17 | `complemento` | `String` | Detalhes complementares de localização |
+| 18 | `bairro` | `String` | Bairro onde o negócio está instalado |
+| 19 | `cep` | `UInt32` | Código de Endereçamento Postal |
+| 20 | `uf` | `String` | Estado federativo da sede (UF) |
+| 21 | `municipio` | `UInt32` | Código IBGE do município |
+| 22 | `ddd_1` | `UInt16` | DDD do telefone de contato primário |
+| 23 | `telefone_1` | `String` | Número de telefone principal |
+| 24 | `ddd_2` | `UInt16` | DDD do telefone secundário |
+| 25 | `telefone_2` | `String` | Número de telefone secundário |
+| 26 | `ddd_fax` | `UInt16` | DDD de fax secundário |
+| 27 | `fax` | `String` | Linha de fax |
+| 28 | `correio_eletronico` | `String` | E-mail corporativo cadastrado |
+| 29 | `situacao_especial` | `String` | Status especiais cadastrais |
+| 30 | `data_situacao_especial` | `UInt32` | Data do status especial |
+| 31 | `natureza_juridica` | `UInt16` | Código de natureza jurídica (geralmente 2135 para MEIs) |
+| 32 | `qualificacao_responsavel`| `UInt8` | Qualificação legal da diretoria |
+| 33 | `porte_empresa` | `UInt8` | Código do porte legal (geralmente 1 ou 5 para MEI) |
+| 34 | `capital_social` | `Float64` | Valor nominal declarado de capital social |
+| 35 | `identificador_socio` | `UInt8` | Tipo de pessoa do sócio (1: Jurídica, 2: Física) |
+| 36 | `nome_socio_razao_social`| `String` | Nome civil completo do Proprietário / Sócio |
+| 37 | `cnpj_cpf_socio` | `String` | CPF mascarado ou CNPJ do sócio |
+| 38 | `qualificacao_socio` | `UInt8` | Código correspondente à qualificação (ex: Titular) |
+| 39 | `data_entrada_sociedade` | `UInt32` | Data em que ingressou na sociedade (AAAAMMDD) |
 
 ---
 
 ## Modelagem Dimensional (Star Schema)
 
+A tabela fato final mantém apenas chaves numéricas (`UInt32`, `UInt16`, `UInt8`) que se relacionam com as tabelas de dimensões indexadas no disco (Gold). Isso reduz drasticamente o tamanho do arquivo final e otimiza o cache de consultas:
+
 ```
 dim_naturezas_juridicas   ───┐
-dim_qualificacoes_socios   ───┤
-dim_motivos_situacao       ───┤    
-dim_municipios             ───┼──── mei_estabelecimentos_YYYYMMDD  (FATO)
-dim_paises                 ───┤
-dim_cnaes                  ───┘
-```
-
-A tabela fato mantém apenas os **códigos numéricos** (chaves estrangeiras). Ferramentas como DuckDB, Power BI ou Spark fazem o lookup nas tabelas de dimensão em tempo de query. Isso evita repetir strings longas como `"EMPRESÁRIO INDIVIDUAL"` milhões de vezes.
-
-**Exemplo de query com DuckDB:**
-```sql
-SELECT 
-    f.razao_social,
-    m.descricao AS municipio,
-    c.descricao AS atividade_principal,
-    COUNT(*) AS estabelecimentos
-FROM 'data/parquets/mei_estabelecimentos_*.parquet' f
-LEFT JOIN 'data/parquets/dim_municipios.parquet' m ON f.municipio = m.codigo
-LEFT JOIN 'data/parquets/dim_cnaes.parquet'      c ON f.cnae_fiscal_principal = c.codigo
-GROUP BY 1, 2, 3
-ORDER BY 4 DESC
-LIMIT 20;
+dim_qualificacoes_socios  ───┤
+dim_motivos_situacao      ───┤    
+dim_municipios            ───┼──── mei_estabelecimentos_YYYYMMDD  (FATO)
+dim_paises                ───┤
+dim_cnaes                 ───┘
 ```
 
 ---
 
-## Convenção de Nomenclatura dos Parquets
+## 🍃 Camada Operacional com MongoDB
 
-| Prefixo | Tipo | Exemplo |
-|---|---|---|
-| `mei_` | Tabela fato (filtrada) | `mei_estabelecimentos_20251214.parquet` |
-| `dim_` | Tabela de dimensão/domínio | `dim_municipios.parquet` |
+Para fins de consultas de busca rápida ou fichas cadastrais (padrão OLTP), os dados consolidados da tabela Gold são importados no **MongoDB**.
 
-O sufixo `_YYYYMMDD` na tabela fato é o **snapshot date** — a data em que o pipeline foi executado. Permite manter histórico de múltiplos snapshots e fazer queries com glob (`*.parquet`).
+### Estrutura Orientada a Documentos (Aninhada)
+Aproveitando as propriedades do formato BSON, os dados são denormalizados e agrupados por `cnpj_basico`. A estrutura aninha as filiais (`estabelecimentos`) e os `socios` em arrays no mesmo documento:
+
+```json
+{
+  "_id": 41367111,
+  "razao_social": "ERIC AMORIM SERVICOS DE APOIO ADMINISTRATIVO LTDA",
+  "natureza_juridica": 2135,
+  "capital_social": 1500.0,
+  "porte_empresa": 1,
+  "opcao_pelo_simples": "S",
+  "opcao_pelo_mei": "S",
+  "socios": [
+    {
+      "identificador_socio": 2,
+      "nome_socio_razao_social": "ERIC AMORIM",
+      "cnpj_cpf_socio": "***489128**",
+      "qualificacao_socio": 65,
+      "data_entrada_sociedade": 20210515
+    }
+  ],
+  "estabelecimentos": [
+    {
+      "cnpj_ordem": 1,
+      "cnpj_dv": 47,
+      "identificador_matriz_filial": 1,
+      "nome_fantasia": "AMORIM APOIO E SERVICOS",
+      "situacao_cadastral": 2,
+      "data_situacao_cadastral": 20210515,
+      "data_inicio_atividade": 20210515,
+      "cnae_fiscal_principal": 8211300,
+      "cnae_fiscal_secundarias": [8219999, 7319002],
+      "endereco": {
+        "tipo_logradouro": "AVENIDA",
+        "logradouro": "PAULISTA",
+        "numero": "1000",
+        "complemento": "SALA 51",
+        "bairro": "BELA VISTA",
+        "cep": 1311000,
+        "uf": "SP",
+        "municipio": 3550308
+      },
+      "contato": {
+        "ddd_1": 11,
+        "telefone_1": "998877665",
+        "ddd_2": null,
+        "telefone_2": null,
+        "correio_eletronico": "contato@amorim.com"
+      }
+    }
+  ]
+}
+```
+
+### Otimizações e Estratégia de Carga (Bulk Write)
+* **Limpeza e Idempotência**: O script `integrate_mongodb.py` realiza um `drop_database("cnpj_rf")` completo no início para limpar dados legados e assegurar integridade estrutural.
+* **Bulk Writes**: Insere em lotes (`ordered=False`) de 50.000 registros para maximizar a taxa de transferência.
+* **Agrupamento Local**: Agrupa as filiais em memória por `cnpj_basico` dentro de cada lote, realizando um único `UpdateOne(..., upsert=True)` usando `$setOnInsert` para dados corporativos e `$push` com `$each` para anexar estabelecimentos.
+* **Índices Criados**:
+  * `_id` (CNPJ Básico primário)
+  * `estabelecimentos.cnae_fiscal_principal` (Índice padrão)
+  * `estabelecimentos.cnae_fiscal_secundarias` (Índice *multikey* para busca em arrays de inteiros)
+  * `estabelecimentos.endereco.uf` (Filtro geográfico)
 
 ---
 
-## .gitignore
+## 📊 Dashboard Analítico (Streamlit)
 
-Arquivos de dados não são versionados (são grandes demais e reproduzíveis):
+A aplicação de BI integrada, contida em `dashboard/`, foi desenvolvida com foco em alta performance e experiência visual rica.
 
-```
-*.parquet
-*.zip
-*.csv
-data/extraido/*
-data/silver/*
-```
+### Arquitetura do Dashboard
+A aplicação está estruturada de maneira modular para facilitar manutenções:
+* **`app.py`**: Gerenciador central de abas e layout da aplicação (painel lateral e cabeçalho customizados).
+* **`config.py`**: Configuração central de paleta de cores (HSL harmonizado com tema escuro premium), tipografia moderna e constantes.
+* **`data_loader.py`**: Concentra todas as leituras de dados analíticos (via arquivo Parquet com motor Polars e Lazy Evaluation) e consultas pontuais à API do MongoDB. Possui sistema de cache (`@st.cache_data`) para aceleração de gráficos recorrentes.
+* **`components/`**: Arquivos isolados para renderização de cards de métricas (`kpi_cards.py`), criação de painéis de filtros (`filters.py`) e centralização dos gráficos customizados do Plotly com tema integrado (`charts.py`).
+* **`views/`**: Telas independentes contendo a lógica de cada aba analítica.
+
+### Seções e Funcionalidades do Dashboard
+
+1. **Visão Geral**:
+   * **KPIs Dinâmicos**: Exibição em cards modernos de: total de MEIs registrados, número de MEIs ativos, porcentagem de atividade e média global de capital social declarado.
+   * **Situação Cadastral**: Gráfico de barras verticais indicando a quantidade de MEIs em cada estado cadastral (Ativo, Baixado, Inapto, Suspenso).
+   * *Obs: Gráficos de barra que envolviam comparação de portes (ME e EPP) foram removidos para manter o dashboard 100% focado no nicho de MEI.*
+
+2. **Análise Temporal**:
+   * **Filtro Seguro (>= 2009)**: Os dados do dashboard são rigidamente restritos a anos superiores ou iguais a 2009. Esta decisão de engenharia corrige distorções de data anteriores e remove o pico anômalo de capital social observado no ano de 2007 (uma vez que a lei que rege a criação do MEI entrou em vigor em **2009**).
+   * **Aberturas Mensais**: Gráfico de linhas temporais que exibe o volume de novos registros mês a mês ao longo dos anos selecionados.
+   * **Aberturas vs Fechamentos Anual**: Gráfico de linhas duplas permitindo comparar diretamente o total de MEIs criados com o total de MEIs encerrados (baixados) ao longo do tempo.
+   * **Média de Capital Social**: Evolução anual do valor médio declarado no capital social.
+
+3. **Análise Geográfica**:
+   * **Mapa de Calor (Coroplético)**: Visualização da distribuição dos MEIs pelos estados do Brasil utilizando o mapa interactivo do Plotly.
+   * **Tabela Auxiliar**: Ordenação das UFs pelo número absoluto de registros e proporção.
+   * *Obs: O gráfico Treemap foi removido para evitar excesso visual e sobreposição de rótulos.*
+
+4. **Análise por Atividade Econômica (CNAE)**:
+   * **Top 10 CNAEs**: Gráfico de barras horizontais indicando quais são as principais atividades econômicas escolhidas pelos Microempreendedores Individuais.
+   * *Obs: Gráficos complexos como Sunburst e cruzamentos de CNAE x Situação Cadastral foram removidos para focar em clareza.*
+
+5. **Consulta Cadastral (360° Lookup)**:
+   * Busca em tempo real baseada diretamente na coleção operacional do **MongoDB**.
+   * O usuário pode buscar por **CNPJ** (completo ou básico) ou **Razão Social/Nome Fantasia**.
+   * Exibição de uma ficha cadastral premium no estilo card de negócios, contendo dados corporativos básicos, endereço completo e dados de contato.
+   * **Seção de Sócios**: Mostra o nome do Proprietário / Sócio Titular do MEI e seu CPF mascarado.
+   * **Sanitização de Strings**: Tratamento rigoroso na leitura dos dados para garantir que valores ausentes ou strings literais `"None"` e `"NONE"` sejam limpos, apresentando espaços em branco ou omitindo campos não preenchidos.
+   * *Obs: A filtragem analítica secundária por UF+CNAE foi removida para tornar a experiência de consulta direta extremamente objetiva.*
 
 ---
 
-## Como Rodar o Pipeline Completo
+## Como Instalar e Executar o Projeto
 
+### Pré-requisitos
+* Conda (Miniconda ou Anaconda) ou Python 3.13 instalado.
+* Docker instalado (para rodar o MongoDB localmente) ou uma instância do MongoDB rodando na porta `27017`.
+
+### Passo a Passo
+
+#### 1. Clonar o projeto e criar o ambiente virtual
 ```bash
-# 1. Baixar os ZIPs da Receita Federal
-python coleta.py
+# Criar ambiente Conda
+conda create -n pipeline-mei python=3.13 -y
+conda activate pipeline-mei
 
-# 2. Extrair os ZIPs e remover os originais
-python extrair_dados.py
+# Instalar dependências gerais
+pip install polars pyarrow pymongo streamlit plotly requests beautifulsoup4
+```
 
-# 3. Rodar o pipeline de transformação (Bronze → Silver → Gold)
+#### 2. Executar download e extração dos dados (Bronze)
+```bash
+python coleta_extracao.py
+```
+*Este comando irá mapear os arquivos no servidor, efetuar o download dos ZIPs em paralelo (até 4 por vez) e depois extraí-los para a pasta `data/extraido/`, apagando o ZIP original para otimizar espaço.*
+
+#### 3. Executar o processamento ETL (Silver e Gold)
+```bash
 python build_mei_dataset.py
 ```
+*Este comando converte os CSVs brutos em parquets compactados na camada Silver em lotes eficientes e depois gera a tabela Fato consolidada `data/parquets/mei_estabelecimentos_YYYYMMDD.parquet`.*
 
-> **O pipeline é idempotente.** Se interrompido, pode ser reiniciado — arquivos já processados são pulados automaticamente via checagem de existência do Parquet de saída.
-
----
-
-## 🍃 Integração com MongoDB (Camada Operacional)
-
-Além do armazenamento em Parquet para consultas analíticas pesadas (OLAP), o projeto conta com uma **Integração com MongoDB (OLTP)** para permitir consultas cadastrais pontuais rápidas (360° Lookup) por CNPJ básico, CNAE e UF.
-
-### Arquitetura Híbrida (HTAP)
-* **DuckDB + Parquet**: Utilizado para realizar grandes agregações, cálculos de média de capital social e relatórios analíticos de BI.
-* **MongoDB (BSON)**: Utilizado para buscas detalhadas rápidas de empresas e suas filiais de forma denormalizada.
-
-### 📝 Estrutura do Documento e Resolução de Duplicidades
-Para aproveitar a modelagem orientada a documentos, o script de integração agrupa os estabelecimentos pelo `cnpj_basico`. 
-* Em vez de salvar cada filial em um registro separado (como no SQL/Parquet), salvamos um único documento por empresa (com o `_id` sendo o `cnpj_basico`) contendo um array de `estabelecimentos` (aninhando a matriz e todas as suas filiais no mesmo local).
-* Isso é implementado via operações em lote (**Bulk Write**) no MongoDB usando `UpdateOne(..., upsert=True)` com `$setOnInsert` para os metadados da empresa e `$push` com `$each` para carregar e ir acumulando os estabelecimentos no array de forma rápida e sem chaves duplicadas.
-
-### 🗄️ Onde o banco de dados é criado e armazenado?
-Como o banco de dados roda localmente:
-1. **Nome do Banco**: `cnpj_rf`
-2. **Nome da Coleção**: `empresas_mei`
-3. **Localização Física dos Arquivos**:
-   * **Via Docker (Recomendado)**: Os dados ficam armazenados em um volume gerenciado pelo Docker (`mongo_data`). No Windows (WSL2), esses dados são salvos no disco virtual do Docker, localizado tipicamente em `%USERPROFILE%\AppData\Local\Docker\wsl\data\ext4.vhdx`.
-   * **Instalação Nativa (MSI)**: Se instalado diretamente no Windows, os arquivos do banco ficam na pasta de dados padrão configurada na instalação (geralmente em `C:\Program Files\MongoDB\Server\<versão>\data\`).
-
----
-
-### 🚀 Como Configurar e Rodar o MongoDB Local
-
-#### 1. Iniciar o Banco via Docker Desktop
-Com o **Docker Desktop** aberto e ativo, rode o seguinte comando no PowerShell para subir a imagem oficial do MongoDB:
-```powershell
+#### 4. Subir o contêiner do MongoDB
+```bash
+# Iniciar MongoDB no Docker
 docker run -d --name mongo-local -p 27017:27017 -v mongo_data:/data/db mongo:latest
 ```
 
-#### 2. Rodar a Carga de Integração
-Para ler os arquivos Parquet Gold, estruturar os documentos BSON com estabelecimentos aninhados e importar no MongoDB com os índices corretos, execute:
+#### 5. Executar a importação para o MongoDB (Operational Layer)
 ```bash
-conda run -n base python integrate_mongodb.py
+python integrate_mongodb.py
 ```
+*Lê o Parquet Gold mais recente, cria os documentos estruturados denormalizados, limpa o banco de dados `cnpj_rf` anterior e carrega os novos dados, finalizando com a criação de índices rápidos.*
 
-O script criará automaticamente os seguintes índices após a importação para garantir buscas em milissegundos:
-* `_id`: Chave primária baseada no `cnpj_basico`.
-* `estabelecimentos.cnae_fiscal_principal`: Índice para buscas rápidas por atividade econômica principal.
-* `estabelecimentos.cnae_fiscal_secundarias`: Índice *multikey* para filtrar por atividades secundárias contidas no array.
-* `estabelecimentos.endereco.uf`: Índice para filtragem rápida por estado de origem.
+#### 6. Executar o Dashboard Streamlit
+```bash
+# Entrar na pasta do dashboard e rodar
+cd dashboard
+streamlit run app.py
+```
+Acesse o painel abrindo `http://localhost:8501/` no seu navegador de internet.
 
 ---
-
-### 🔍 Exemplo de Consultas no MongoDB (Python / MongoDB Compass)
-
-**Pesquisa de Ficha Cadastral Completa por CNPJ (Busca direta por ID):**
-```python
-empresa = db.empresas_mei.find_one({"_id": 41367111})
-```
-
-**Busca de empresas no estado do Maranhão (MA) que atuam em um CNAE específico:**
-```python
-empresas = db.empresas_mei.find({
-    "estabelecimentos.endereco.uf": "MA",
-    "estabelecimentos.cnae_fiscal_principal": 4773300
-})
-```
-
+**Desenvolvido para fins acadêmicos e analíticos de Big Data — 2026.**

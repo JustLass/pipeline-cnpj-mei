@@ -1,0 +1,6 @@
+streamlit>=1.38
+polars>=1.0
+plotly>=5.22
+pymongo>=4.7
+pyarrow>=17.0
+streamlit-option-menu>=0.4
